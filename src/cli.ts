@@ -1,0 +1,186 @@
+#!/usr/bin/env bun
+import { parseArgs } from "node:util";
+import { runDumpCommand } from "./commands/dump";
+import { runLoginCommand } from "./commands/login";
+import { runServerCommand } from "./commands/server";
+import { getErrorCauseMessages, isAppError } from "./util/errors";
+
+function printRootHelp(): void {
+  process.stdout.write(`whoosh\n\nUsage:\n  whoosh <command> [options]\n\nCommands:\n  login   Run OAuth login flow and save token file\n  dump    Fetch Whoop data once and export it\n  server  Run scheduled token refresh + data export\n\nGlobal options:\n  --config <path>        TOML config file path\n  --credentials <path>   Token file path (default: token.toml)\n  -d, --debug <level>    debug|info|warn|error\n  --help                 Show help\n\nRun command help:\n  whoosh <command> --help\n`);
+}
+
+function printLoginHelp(): void {
+  process.stdout.write(`Usage: whoosh login [options]\n\nOptions:\n  --config <path>\n  --credentials <path>\n  -d, --debug <level>\n  -p, --port <port>                  Default: 8080\n  -r, --redirect-path <path>         Default: /redirect\n  -n, --no-auto-open                 Do not auto-open browser\n  --help\n`);
+}
+
+function printDumpHelp(): void {
+  process.stdout.write(`Usage: whoosh dump [options]\n\nOptions:\n  --config <path>\n  --credentials <path>\n  -d, --debug <level>\n  -f, --filter <query>               Whoop filter query string\n  -o, --output <sqlite|json>         Default: sqlite\n  --db <path>                        Required when output=sqlite\n  --json-path <path>                 Required when output=json\n  --help\n`);
+}
+
+function printServerHelp(): void {
+  process.stdout.write(`Usage: whoosh server [options]\n\nOptions:\n  --config <path>\n  --credentials <path>\n  -d, --debug <level>\n  -o, --output <sqlite|json>         Default: sqlite\n  --db <path>                        Required when output=sqlite\n  --json-path <path>                 Required when output=json\n  --crontab <expr>                   Default: 0 13 * * *\n  --jwt-refresh-minutes <1-59>       Default: 45\n  --help\n`);
+}
+
+function extractCommand(args: string[]): { command?: string; commandArgs: string[] } {
+  if (args.length === 0) {
+    return { commandArgs: args };
+  }
+
+  const first = args[0];
+  if (first.startsWith("-")) {
+    return { commandArgs: args };
+  }
+
+  return {
+    command: first,
+    commandArgs: args.slice(1),
+  };
+}
+
+async function main(argv: string[]): Promise<void> {
+  const args = argv.slice(2);
+  const { command, commandArgs } = extractCommand(args);
+
+  if (!command) {
+    const parsed = parseArgs({
+      args: commandArgs,
+      options: {
+        help: { type: "boolean" },
+      },
+      strict: false,
+      allowPositionals: true,
+    });
+
+    if (parsed.values.help || commandArgs.length === 0) {
+      printRootHelp();
+      return;
+    }
+
+    throw new Error("Missing command. Run --help for usage.");
+  }
+
+  if (command === "help") {
+    printRootHelp();
+    return;
+  }
+
+  switch (command) {
+    case "login": {
+      const parsed = parseArgs({
+        args: commandArgs,
+        options: {
+          config: { type: "string" },
+          credentials: { type: "string" },
+          debug: { type: "string", short: "d" },
+          port: { type: "string", short: "p" },
+          "redirect-path": { type: "string", short: "r" },
+          "no-auto-open": { type: "boolean", short: "n" },
+          help: { type: "boolean" },
+        },
+        strict: true,
+      });
+
+      if (parsed.values.help) {
+        printLoginHelp();
+        return;
+      }
+
+      await runLoginCommand({
+        configPath: parsed.values.config,
+        credentialsFile: parsed.values.credentials,
+        debug: parsed.values.debug,
+        port: parsed.values.port,
+        redirectPath: parsed.values["redirect-path"],
+        noAutoOpen: parsed.values["no-auto-open"] ?? false,
+      });
+      return;
+    }
+
+    case "dump": {
+      const parsed = parseArgs({
+        args: commandArgs,
+        options: {
+          config: { type: "string" },
+          credentials: { type: "string" },
+          debug: { type: "string", short: "d" },
+          filter: { type: "string", short: "f" },
+          output: { type: "string", short: "o" },
+          db: { type: "string" },
+          "json-path": { type: "string" },
+          help: { type: "boolean" },
+        },
+        strict: true,
+      });
+
+      if (parsed.values.help) {
+        printDumpHelp();
+        return;
+      }
+
+      await runDumpCommand({
+        configPath: parsed.values.config,
+        credentialsFile: parsed.values.credentials,
+        debug: parsed.values.debug,
+        filter: parsed.values.filter,
+        output: parsed.values.output,
+        dbPath: parsed.values.db,
+        jsonPath: parsed.values["json-path"],
+      });
+      return;
+    }
+
+    case "server": {
+      const parsed = parseArgs({
+        args: commandArgs,
+        options: {
+          config: { type: "string" },
+          credentials: { type: "string" },
+          debug: { type: "string", short: "d" },
+          output: { type: "string", short: "o" },
+          db: { type: "string" },
+          "json-path": { type: "string" },
+          crontab: { type: "string" },
+          "jwt-refresh-minutes": { type: "string" },
+          help: { type: "boolean" },
+        },
+        strict: true,
+      });
+
+      if (parsed.values.help) {
+        printServerHelp();
+        return;
+      }
+
+      await runServerCommand({
+        configPath: parsed.values.config,
+        credentialsFile: parsed.values.credentials,
+        debug: parsed.values.debug,
+        output: parsed.values.output,
+        dbPath: parsed.values.db,
+        jsonPath: parsed.values["json-path"],
+        crontab: parsed.values.crontab,
+        jwtRefreshMinutes: parsed.values["jwt-refresh-minutes"],
+      });
+      return;
+    }
+
+    default:
+      throw new Error(`Unknown command: ${command}`);
+  }
+}
+
+main(Bun.argv).catch((error) => {
+  if (isAppError(error)) {
+    process.stderr.write(`ERROR [${error.code}] ${error.message}\n`);
+    const causes = getErrorCauseMessages(error).slice(1);
+    if (causes.length > 0) {
+      process.stderr.write(`CAUSE ${causes.join(" <- ")}\n`);
+    }
+    process.exit(1);
+    return;
+  }
+
+  const message = error instanceof Error ? error.message : String(error);
+  process.stderr.write(`ERROR ${message}\n`);
+  process.exit(1);
+});

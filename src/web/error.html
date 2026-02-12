@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>whoosh login error</title>
+    <style>
+      body { font-family: ui-sans-serif, system-ui, sans-serif; margin: 2rem; line-height: 1.5; }
+      .card { max-width: 720px; margin: 0 auto; border: 1px solid #ddd; border-radius: 10px; padding: 1.5rem; }
+      .status { color: #b00020; font-weight: 600; }
+      pre { background: #f8f8f8; border: 1px solid #eee; padding: 1rem; border-radius: 8px; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>Authentication failed</h1>
+      <p class="status">Status: {{STATUS_CODE}}</p>
+      <pre>{{ERROR_MESSAGE}}</pre>
+      <p>Close this tab and retry <code>whoosh login</code>.</p>
+    </div>
+  </body>
+</html>
