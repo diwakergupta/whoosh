@@ -103,6 +103,14 @@ bun run src/cli.ts --help
 bun run src/cli.ts login
 ```
 
+Remote/server workflow (manual callback paste):
+
+```bash
+bun run src/cli.ts login --manual --no-auto-open
+```
+
+In manual mode, `whoosh` prints an authorization URL for your local browser. After authentication, the browser may show a redirect failure page; copy the full redirect URL and paste it back into the CLI prompt to complete token exchange.
+
 ### Dump (SQLite)
 
 ```bash

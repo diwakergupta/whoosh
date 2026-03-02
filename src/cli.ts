@@ -10,7 +10,7 @@ function printRootHelp(): void {
 }
 
 function printLoginHelp(): void {
-  process.stdout.write(`Usage: whoosh login [options]\n\nOptions:\n  --config <path>\n  --credentials <path>\n  -d, --debug <level>\n  -p, --port <port>                  Default: 8080\n  -r, --redirect-path <path>         Default: /redirect\n  -n, --no-auto-open                 Do not auto-open browser\n  --help\n`);
+  process.stdout.write(`Usage: whoosh login [options]\n\nOptions:\n  --config <path>\n  --credentials <path>\n  -d, --debug <level>\n  -p, --port <port>                  Default: 8080\n  -r, --redirect-path <path>         Default: /redirect\n  -m, --manual                       Paste callback URL instead of running local callback server\n  -n, --no-auto-open                 Do not auto-open browser\n  --help\n`);
 }
 
 function printDumpHelp(): void {
@@ -74,6 +74,7 @@ async function main(argv: string[]): Promise<void> {
           debug: { type: "string", short: "d" },
           port: { type: "string", short: "p" },
           "redirect-path": { type: "string", short: "r" },
+          manual: { type: "boolean", short: "m" },
           "no-auto-open": { type: "boolean", short: "n" },
           help: { type: "boolean" },
         },
@@ -91,6 +92,7 @@ async function main(argv: string[]): Promise<void> {
         debug: parsed.values.debug,
         port: parsed.values.port,
         redirectPath: parsed.values["redirect-path"],
+        manual: parsed.values.manual ?? false,
         noAutoOpen: parsed.values["no-auto-open"] ?? false,
       });
       return;

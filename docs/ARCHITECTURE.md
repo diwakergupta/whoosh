@@ -12,8 +12,8 @@
 
 1. Validate Whoop client env vars.
 2. Build authorization URL via `openid-client`.
-3. Start local Bun server and serve static pages.
-4. Handle callback, exchange code for token.
+3. Run local callback server flow or manual callback-paste flow.
+4. Validate callback state/path and exchange code for token.
 5. Persist token as TOML.
 
 ## `dump`
