@@ -44,11 +44,68 @@ describe("exportToSqlite", () => {
       const sleepCount = db.query("SELECT COUNT(*) AS count FROM sleep_records").get() as { count: number };
       expect(sleepCount.count).toBe(1);
 
+      const sleepLocalDate = db.query("SELECT local_date FROM sleep_records WHERE id = 'sleep-1'").get() as {
+        local_date: string | null;
+      };
+      expect(sleepLocalDate.local_date).toBe("2026-01-01");
+
+      const recoveryLocalDate = db
+        .query("SELECT local_date FROM recovery_records WHERE cycle_id = 100")
+        .get() as { local_date: string | null };
+      expect(recoveryLocalDate.local_date).toBe("2026-01-01");
+
+      const workoutLocalDate = db
+        .query("SELECT local_date FROM workout_records WHERE id = 'workout-1'")
+        .get() as { local_date: string | null };
+      expect(workoutLocalDate.local_date).toBe("2026-01-01");
+
       const runs = db.query("SELECT COUNT(*) AS count FROM dump_runs").get() as { count: number };
       expect(runs.count).toBe(2);
 
+      const sleepIndexes = db.query("PRAGMA index_list('sleep_records')").all() as Array<{ name: string }>;
+      const hasSleepLocalDateIndex = sleepIndexes.some((row) => row.name === "idx_sleep_records_local_date");
+      expect(hasSleepLocalDateIndex).toBe(true);
+
       const mode = db.query("PRAGMA journal_mode").get() as { journal_mode: string };
       expect(mode.journal_mode.toLowerCase()).toBe("wal");
+    } finally {
+      db.close(false);
+    }
+  });
+
+  it("uses wake-day semantics for sleep/recovery and local timezone for workouts", async () => {
+    const dir = await makeTempDir();
+    const dbPath = path.join(dir, "whoosh.sqlite");
+
+    const dump = createSampleDump();
+    dump.sleep_collection.records[0].end = "2026-03-10T03:30:00.000Z";
+    dump.sleep_collection.records[0].updated_at = "2026-03-10T03:35:00.000Z";
+    dump.sleep_collection.records[0].timezone_offset = "-04:00";
+    dump.recovery_collection.records[0].created_at = "2026-03-10T12:00:00.000Z";
+    dump.workout_collection.records[0].start = "2026-03-10T02:15:00.000Z";
+    dump.workout_collection.records[0].timezone_offset = "-04:00";
+
+    await exportToSqlite(dump, {
+      dbPath,
+      mode: "dump",
+    });
+
+    const db = new Database(dbPath, { readonly: true });
+    try {
+      const sleepLocalDate = db.query("SELECT local_date FROM sleep_records WHERE id = 'sleep-1'").get() as {
+        local_date: string | null;
+      };
+      expect(sleepLocalDate.local_date).toBe("2026-03-09");
+
+      const recoveryLocalDate = db
+        .query("SELECT local_date FROM recovery_records WHERE cycle_id = 100")
+        .get() as { local_date: string | null };
+      expect(recoveryLocalDate.local_date).toBe("2026-03-09");
+
+      const workoutLocalDate = db
+        .query("SELECT local_date FROM workout_records WHERE id = 'workout-1'")
+        .get() as { local_date: string | null };
+      expect(workoutLocalDate.local_date).toBe("2026-03-09");
     } finally {
       db.close(false);
     }
