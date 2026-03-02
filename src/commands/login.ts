@@ -1,10 +1,12 @@
-import { createAuthorizationUrl, createOAuthClient, exchangeAuthorizationCode } from "../auth/oauth";
-import { serializeTokenToml, writeTokenFile } from "../auth/token-store";
+import { createInterface } from "node:readline/promises";
+import { normalizeRedirectPath, parseAuthorizationCallbackUrl, validateAuthorizationCallback } from "../auth/callback";
+import { createAuthorizationUrl, createOAuthClient, exchangeAuthorizationCode, type OAuthClient } from "../auth/oauth";
+import { serializeTokenToml, type StoredToken, writeTokenFile } from "../auth/token-store";
 import { resolveConfig, requireWhoopClientCredentials } from "../config/config";
 import { AppError } from "../util/errors";
 import { openBrowser } from "../util/browser";
 import { htmlResponse } from "../util/http";
-import { createLogger } from "../util/logger";
+import { createLogger, type Logger } from "../util/logger";
 import indexTemplate from "../web/index.html" with { type: "text" };
 import redirectTemplate from "../web/redirect.html" with { type: "text" };
 import errorTemplate from "../web/error.html" with { type: "text" };
@@ -18,6 +20,7 @@ export interface LoginCliOptions {
   credentialsFile?: string;
   debug?: string;
   noAutoOpen?: boolean;
+  manual?: boolean;
   port?: string;
   redirectPath?: string;
 }
@@ -30,38 +33,99 @@ function renderTemplate(template: string, replacements: Record<string, string>):
   return result;
 }
 
-function normalizeRedirectPath(value: string | undefined): string {
-  const pathValue = value && value.length > 0 ? value : "/redirect";
-  if (pathValue.startsWith("/")) {
-    return pathValue;
-  }
-  return `/${pathValue}`;
-}
-
-export async function runLoginCommand(cli: LoginCliOptions): Promise<void> {
-  const config = await resolveConfig({
-    command: "login",
-    cli: {
-      configPath: cli.configPath,
-      credentialsFile: cli.credentialsFile,
-      debug: cli.debug,
-    },
+async function exchangeAndPersistToken(params: {
+  oauthClient: OAuthClient;
+  callbackUrl: URL;
+  expectedState: string;
+  redirectUri: string;
+  credentialsFile: string;
+}): Promise<StoredToken> {
+  const token = await exchangeAuthorizationCode({
+    client: params.oauthClient,
+    callbackUrl: params.callbackUrl,
+    expectedState: params.expectedState,
+    redirectUri: params.redirectUri,
   });
 
-  const logger = createLogger(config.debug);
-  const { clientId, clientSecret } = requireWhoopClientCredentials(config);
+  await writeTokenFile(params.credentialsFile, token);
+  return token;
+}
 
-  const port = cli.port ? Number.parseInt(cli.port, 10) : 8080;
-  if (!Number.isFinite(port) || port <= 0 || port > 65535) {
-    throw new AppError("--port must be between 1 and 65535.", "VALIDATION");
+async function promptForRedirectUrl(): Promise<string> {
+  const rl = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  try {
+    return await rl.question("Paste the full redirect URL: ");
+  } finally {
+    rl.close();
+  }
+}
+
+async function runManualLoginFlow(params: {
+  logger: Logger;
+  oauthClient: OAuthClient;
+  authUrl: URL;
+  expectedState: string;
+  redirectPath: string;
+  redirectUri: string;
+  credentialsFile: string;
+  noAutoOpen: boolean;
+}): Promise<void> {
+  const authUrlText = params.authUrl.toString();
+
+  params.logger.info("Manual OAuth mode enabled.");
+  params.logger.info("Open this URL in a browser on your local machine:");
+  process.stdout.write(`${authUrlText}\n`);
+
+  if (!params.noAutoOpen) {
+    try {
+      openBrowser(authUrlText);
+    } catch (error) {
+      params.logger.warn("Unable to auto-open browser.", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  } else {
+    params.logger.info("Auto-open disabled. Copy the URL above into your browser.");
   }
 
-  const redirectPath = normalizeRedirectPath(cli.redirectPath);
-  const baseUrl = `http://localhost:${port}`;
-  const redirectUri = `${baseUrl}${redirectPath}`;
+  params.logger.info("After authentication, your browser may show a 404 or connection error. This is expected.");
+  const callbackInput = await promptForRedirectUrl();
+  const callbackUrl = parseAuthorizationCallbackUrl(callbackInput);
+  validateAuthorizationCallback({
+    callbackUrl,
+    expectedState: params.expectedState,
+    expectedPath: params.redirectPath,
+  });
 
-  const oauthClient = createOAuthClient(clientId, clientSecret);
-  const { url: authUrl, state } = createAuthorizationUrl(oauthClient, redirectUri);
+  await exchangeAndPersistToken({
+    oauthClient: params.oauthClient,
+    callbackUrl,
+    expectedState: params.expectedState,
+    redirectUri: params.redirectUri,
+    credentialsFile: params.credentialsFile,
+  });
+
+  params.logger.info("Login complete", {
+    credentialsFile: params.credentialsFile,
+  });
+}
+
+async function runLocalServerLoginFlow(params: {
+  logger: Logger;
+  oauthClient: OAuthClient;
+  authUrl: URL;
+  expectedState: string;
+  redirectPath: string;
+  redirectUri: string;
+  credentialsFile: string;
+  baseUrl: string;
+  port: number;
+  noAutoOpen: boolean;
+}): Promise<void> {
   let resolveDone: (() => void) | undefined;
   let rejectDone: ((error: unknown) => void) | undefined;
   let settled = false;
@@ -73,45 +137,41 @@ export async function runLoginCommand(cli: LoginCliOptions): Promise<void> {
 
   const server = Bun.serve({
     hostname: "127.0.0.1",
-    port,
+    port: params.port,
     fetch: async (request) => {
       const url = new URL(request.url);
 
       if (url.pathname === "/") {
-        return htmlResponse(renderTemplate(INDEX_TEMPLATE, { AUTH_URL: authUrl.toString() }));
+        return htmlResponse(renderTemplate(INDEX_TEMPLATE, { AUTH_URL: params.authUrl.toString() }));
       }
 
-      if (url.pathname === redirectPath) {
-        const callbackState = url.searchParams.get("state");
-        if (!callbackState || callbackState !== state) {
-          const body = renderTemplate(ERROR_TEMPLATE, {
-            STATUS_CODE: "400",
-            ERROR_MESSAGE: "State validation failed. Please retry login.",
+      if (url.pathname === params.redirectPath) {
+        try {
+          validateAuthorizationCallback({
+            callbackUrl: url,
+            expectedState: params.expectedState,
+            expectedPath: params.redirectPath,
           });
-          return htmlResponse(body, 400);
-        }
-
-        const code = url.searchParams.get("code");
-        if (!code) {
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
           const body = renderTemplate(ERROR_TEMPLATE, {
             STATUS_CODE: "400",
-            ERROR_MESSAGE: "Missing authorization code from Whoop callback.",
+            ERROR_MESSAGE: message,
           });
           return htmlResponse(body, 400);
         }
 
         try {
-          const token = await exchangeAuthorizationCode({
-            client: oauthClient,
+          const token = await exchangeAndPersistToken({
+            oauthClient: params.oauthClient,
             callbackUrl: url,
-            expectedState: state,
-            redirectUri,
+            expectedState: params.expectedState,
+            redirectUri: params.redirectUri,
+            credentialsFile: params.credentialsFile,
           });
 
-          await writeTokenFile(config.credentialsFile, token);
-
           const body = renderTemplate(REDIRECT_TEMPLATE, {
-            CREDENTIALS_FILE: config.credentialsFile,
+            CREDENTIALS_FILE: params.credentialsFile,
             TOKEN_BODY: serializeTokenToml(token),
           });
 
@@ -143,23 +203,76 @@ export async function runLoginCommand(cli: LoginCliOptions): Promise<void> {
     },
   });
 
-  logger.info("Login server started", {
-    url: baseUrl,
-    redirectUri,
-    credentialsFile: config.credentialsFile,
+  params.logger.info("Login server started", {
+    url: params.baseUrl,
+    redirectUri: params.redirectUri,
+    credentialsFile: params.credentialsFile,
   });
 
-  if (!cli.noAutoOpen) {
+  if (!params.noAutoOpen) {
     try {
-      openBrowser(baseUrl);
+      openBrowser(params.baseUrl);
     } catch (error) {
-      logger.warn("Unable to auto-open browser.", {
+      params.logger.warn("Unable to auto-open browser.", {
         error: error instanceof Error ? error.message : String(error),
       });
     }
   } else {
-    logger.info(`Open ${baseUrl} in your browser to authenticate.`);
+    params.logger.info(`Open ${params.baseUrl} in your browser to authenticate.`);
   }
 
   await done;
+}
+
+export async function runLoginCommand(cli: LoginCliOptions): Promise<void> {
+  const config = await resolveConfig({
+    command: "login",
+    cli: {
+      configPath: cli.configPath,
+      credentialsFile: cli.credentialsFile,
+      debug: cli.debug,
+    },
+  });
+
+  const logger = createLogger(config.debug);
+  const { clientId, clientSecret } = requireWhoopClientCredentials(config);
+
+  const port = cli.port ? Number.parseInt(cli.port, 10) : 8080;
+  if (!Number.isFinite(port) || port <= 0 || port > 65535) {
+    throw new AppError("--port must be between 1 and 65535.", "VALIDATION");
+  }
+
+  const redirectPath = normalizeRedirectPath(cli.redirectPath);
+  const baseUrl = `http://localhost:${port}`;
+  const redirectUri = `${baseUrl}${redirectPath}`;
+
+  const oauthClient = createOAuthClient(clientId, clientSecret);
+  const { url: authUrl, state } = createAuthorizationUrl(oauthClient, redirectUri);
+
+  if (cli.manual) {
+    await runManualLoginFlow({
+      logger,
+      oauthClient,
+      authUrl,
+      expectedState: state,
+      redirectPath,
+      redirectUri,
+      credentialsFile: config.credentialsFile,
+      noAutoOpen: cli.noAutoOpen ?? false,
+    });
+    return;
+  }
+
+  await runLocalServerLoginFlow({
+    logger,
+    oauthClient,
+    authUrl,
+    expectedState: state,
+    redirectPath,
+    redirectUri,
+    credentialsFile: config.credentialsFile,
+    baseUrl,
+    port,
+    noAutoOpen: cli.noAutoOpen ?? false,
+  });
 }
