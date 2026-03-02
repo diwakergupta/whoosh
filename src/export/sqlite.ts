@@ -3,7 +3,7 @@ import path from "node:path";
 import { Database } from "bun:sqlite";
 import { AppError } from "../util/errors";
 import type { Logger } from "../util/logger";
-import type { WhoopDump } from "../whoop/types";
+import type { CycleRecord, RecoveryRecord, SleepRecord, WhoopDump, WorkoutRecord } from "../whoop/types";
 
 const SCHEMA_VERSION = 1;
 
@@ -42,6 +42,135 @@ function applySchema(db: Database, schemaSql: string): void {
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function pad2(value: number): string {
+  return value.toString().padStart(2, "0");
+}
+
+function parseTimezoneOffsetMinutes(timezoneOffset: string | null | undefined): number | null {
+  if (!timezoneOffset) {
+    return null;
+  }
+
+  const match = timezoneOffset.match(/^([+-])(\d{2}):(\d{2})$/);
+  if (!match) {
+    return null;
+  }
+
+  const sign = match[1] === "-" ? -1 : 1;
+  const hours = Number.parseInt(match[2], 10);
+  const minutes = Number.parseInt(match[3], 10);
+  if (!Number.isInteger(hours) || !Number.isInteger(minutes) || hours > 23 || minutes > 59) {
+    return null;
+  }
+
+  return sign * (hours * 60 + minutes);
+}
+
+function toYmdUtc(date: Date): string {
+  const year = date.getUTCFullYear();
+  const month = pad2(date.getUTCMonth() + 1);
+  const day = pad2(date.getUTCDate());
+  return `${year}-${month}-${day}`;
+}
+
+function datePrefix(value: string): string | null {
+  const match = value.match(/^(\d{4}-\d{2}-\d{2})/);
+  return match ? match[1] : null;
+}
+
+function toLocalDate(timestamp: string | null | undefined, timezoneOffset: string | null | undefined): string | null {
+  if (!timestamp) {
+    return null;
+  }
+
+  const parsed = new Date(timestamp);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  const offsetMinutes = parseTimezoneOffsetMinutes(timezoneOffset);
+  if (offsetMinutes !== null) {
+    const localized = new Date(parsed.getTime() + offsetMinutes * 60_000);
+    return toYmdUtc(localized);
+  }
+
+  return datePrefix(timestamp) ?? toYmdUtc(parsed);
+}
+
+function firstLocalDate(
+  timezoneOffset: string | null | undefined,
+  ...timestamps: Array<string | null | undefined>
+): string | null {
+  for (const timestamp of timestamps) {
+    const localDate = toLocalDate(timestamp, timezoneOffset);
+    if (localDate) {
+      return localDate;
+    }
+  }
+  return null;
+}
+
+function resolveSleepLocalDate(record: SleepRecord): string | null {
+  return firstLocalDate(
+    record.timezone_offset,
+    record.end,
+    record.updated_at,
+    record.created_at,
+    record.start,
+  );
+}
+
+function resolveWorkoutLocalDate(record: WorkoutRecord): string | null {
+  return firstLocalDate(
+    record.timezone_offset,
+    record.start,
+    record.end,
+    record.created_at,
+    record.updated_at,
+  );
+}
+
+function resolveCycleLocalDate(record: CycleRecord): string | null {
+  return firstLocalDate(
+    record.timezone_offset,
+    record.end,
+    record.updated_at,
+    record.created_at,
+    record.start,
+  );
+}
+
+function buildCycleLocalDateMap(dump: WhoopDump): Map<number, string> {
+  const cycleLocalDateById = new Map<number, string>();
+  for (const record of dump.cycle_collection.records) {
+    const localDate = resolveCycleLocalDate(record);
+    if (localDate) {
+      cycleLocalDateById.set(record.id, localDate);
+    }
+  }
+  return cycleLocalDateById;
+}
+
+function resolveRecoveryLocalDate(
+  record: RecoveryRecord,
+  sleepLocalDateById: Map<string, string>,
+  cycleLocalDateById: Map<number, string>,
+): string | null {
+  if (record.sleep_id) {
+    const sleepLocalDate = sleepLocalDateById.get(record.sleep_id);
+    if (sleepLocalDate) {
+      return sleepLocalDate;
+    }
+  }
+
+  const cycleLocalDate = cycleLocalDateById.get(record.cycle_id);
+  if (cycleLocalDate) {
+    return cycleLocalDate;
+  }
+
+  return firstLocalDate(null, record.created_at, record.updated_at);
 }
 
 function toNullableString(value: unknown): string | null {
@@ -121,10 +250,11 @@ function upsertUserMeasurements(db: Database, runId: number, dump: WhoopDump): v
   );
 }
 
-function upsertSleep(db: Database, runId: number, dump: WhoopDump): void {
+function upsertSleep(db: Database, runId: number, dump: WhoopDump): Map<string, string> {
+  const sleepLocalDateById = new Map<string, string>();
   const sleepRecordStmt = db.query(
-    `INSERT INTO sleep_records (id, user_id, created_at, updated_at, start_time, end_time, timezone_offset, nap, score_state, run_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO sleep_records (id, user_id, created_at, updated_at, start_time, end_time, timezone_offset, nap, score_state, local_date, run_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         user_id = excluded.user_id,
         created_at = excluded.created_at,
@@ -134,6 +264,7 @@ function upsertSleep(db: Database, runId: number, dump: WhoopDump): void {
         timezone_offset = excluded.timezone_offset,
         nap = excluded.nap,
         score_state = excluded.score_state,
+        local_date = excluded.local_date,
         run_id = excluded.run_id`,
   );
 
@@ -175,6 +306,11 @@ function upsertSleep(db: Database, runId: number, dump: WhoopDump): void {
   );
 
   for (const record of dump.sleep_collection.records) {
+    const localDate = resolveSleepLocalDate(record);
+    if (localDate) {
+      sleepLocalDateById.set(record.id, localDate);
+    }
+
     sleepRecordStmt.run(
       record.id,
       record.user_id,
@@ -185,6 +321,7 @@ function upsertSleep(db: Database, runId: number, dump: WhoopDump): void {
       toNullableString(record.timezone_offset),
       toNullableBoolInt(record.nap),
       toNullableString(record.score_state),
+      localDate,
       runId,
     );
 
@@ -219,18 +356,27 @@ function upsertSleep(db: Database, runId: number, dump: WhoopDump): void {
       runId,
     );
   }
+
+  return sleepLocalDateById;
 }
 
-function upsertRecovery(db: Database, runId: number, dump: WhoopDump): void {
+function upsertRecovery(
+  db: Database,
+  runId: number,
+  dump: WhoopDump,
+  sleepLocalDateById: Map<string, string>,
+  cycleLocalDateById: Map<number, string>,
+): void {
   const recordStmt = db.query(
-    `INSERT INTO recovery_records (cycle_id, sleep_id, user_id, created_at, updated_at, score_state, run_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO recovery_records (cycle_id, sleep_id, user_id, created_at, updated_at, score_state, local_date, run_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(cycle_id) DO UPDATE SET
         sleep_id = excluded.sleep_id,
         user_id = excluded.user_id,
         created_at = excluded.created_at,
         updated_at = excluded.updated_at,
         score_state = excluded.score_state,
+        local_date = excluded.local_date,
         run_id = excluded.run_id`,
   );
 
@@ -248,6 +394,8 @@ function upsertRecovery(db: Database, runId: number, dump: WhoopDump): void {
   );
 
   for (const record of dump.recovery_collection.records) {
+    const localDate = resolveRecoveryLocalDate(record, sleepLocalDateById, cycleLocalDateById);
+
     recordStmt.run(
       record.cycle_id,
       toNullableString(record.sleep_id),
@@ -255,6 +403,7 @@ function upsertRecovery(db: Database, runId: number, dump: WhoopDump): void {
       toNullableString(record.created_at),
       toNullableString(record.updated_at),
       toNullableString(record.score_state),
+      localDate,
       runId,
     );
 
@@ -273,8 +422,8 @@ function upsertRecovery(db: Database, runId: number, dump: WhoopDump): void {
 
 function upsertWorkout(db: Database, runId: number, dump: WhoopDump): void {
   const recordStmt = db.query(
-    `INSERT INTO workout_records (id, user_id, created_at, updated_at, start_time, end_time, timezone_offset, sport_id, sport_name, score_state, run_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO workout_records (id, user_id, created_at, updated_at, start_time, end_time, timezone_offset, sport_id, sport_name, score_state, local_date, run_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         user_id = excluded.user_id,
         created_at = excluded.created_at,
@@ -285,6 +434,7 @@ function upsertWorkout(db: Database, runId: number, dump: WhoopDump): void {
         sport_id = excluded.sport_id,
         sport_name = excluded.sport_name,
         score_state = excluded.score_state,
+        local_date = excluded.local_date,
         run_id = excluded.run_id`,
   );
 
@@ -317,6 +467,8 @@ function upsertWorkout(db: Database, runId: number, dump: WhoopDump): void {
   );
 
   for (const record of dump.workout_collection.records) {
+    const localDate = resolveWorkoutLocalDate(record);
+
     recordStmt.run(
       record.id,
       record.user_id,
@@ -328,6 +480,7 @@ function upsertWorkout(db: Database, runId: number, dump: WhoopDump): void {
       record.sport_id ?? null,
       toNullableString(record.sport_name),
       toNullableString(record.score_state),
+      localDate,
       runId,
     );
 
@@ -427,11 +580,12 @@ export async function exportToSqlite(dump: WhoopDump, options: SqliteExportOptio
 
     db.exec("BEGIN IMMEDIATE");
     const runId = insertDumpRun(db, options.mode, options.filter);
+    const cycleLocalDateById = buildCycleLocalDateMap(dump);
 
     upsertUserProfile(db, runId, dump);
     upsertUserMeasurements(db, runId, dump);
-    upsertSleep(db, runId, dump);
-    upsertRecovery(db, runId, dump);
+    const sleepLocalDateById = upsertSleep(db, runId, dump);
+    upsertRecovery(db, runId, dump, sleepLocalDateById, cycleLocalDateById);
     upsertWorkout(db, runId, dump);
     upsertCycle(db, runId, dump);
 

@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS sleep_records (
   timezone_offset TEXT,
   nap INTEGER,
   score_state TEXT,
+  local_date TEXT,
   run_id INTEGER NOT NULL,
   FOREIGN KEY (run_id) REFERENCES dump_runs(id)
 );
@@ -107,6 +108,7 @@ CREATE TABLE IF NOT EXISTS recovery_records (
   created_at TEXT,
   updated_at TEXT,
   score_state TEXT,
+  local_date TEXT,
   run_id INTEGER NOT NULL,
   FOREIGN KEY (run_id) REFERENCES dump_runs(id)
 );
@@ -137,6 +139,7 @@ CREATE TABLE IF NOT EXISTS workout_records (
   sport_id INTEGER,
   sport_name TEXT,
   score_state TEXT,
+  local_date TEXT,
   run_id INTEGER NOT NULL,
   FOREIGN KEY (run_id) REFERENCES dump_runs(id)
 );
@@ -202,3 +205,6 @@ CREATE INDEX IF NOT EXISTS idx_sleep_records_run_id ON sleep_records(run_id);
 CREATE INDEX IF NOT EXISTS idx_recovery_records_run_id ON recovery_records(run_id);
 CREATE INDEX IF NOT EXISTS idx_workout_records_run_id ON workout_records(run_id);
 CREATE INDEX IF NOT EXISTS idx_cycle_records_run_id ON cycle_records(run_id);
+CREATE INDEX IF NOT EXISTS idx_sleep_records_local_date ON sleep_records(local_date);
+CREATE INDEX IF NOT EXISTS idx_recovery_records_local_date ON recovery_records(local_date);
+CREATE INDEX IF NOT EXISTS idx_workout_records_local_date ON workout_records(local_date);

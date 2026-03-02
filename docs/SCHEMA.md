@@ -9,6 +9,9 @@ Schema source of truth: `src/export/schema.sql`
 - Normalized relational tables by domain.
 - `dump_runs` tracks every run and status.
 - Records are upserted for idempotent re-runs.
+- `local_date` is a canonical `YYYY-MM-DD` date for cross-app joins:
+  - sleep/recovery use wake-day semantics (the day recovery applies)
+  - workouts use the activity local day
 
 ## Table catalog
 
@@ -39,7 +42,7 @@ Schema source of truth: `src/export/schema.sql`
 - `sleep_records`
   - parent table for sleep events
   - PK: `id`
-  - columns: timestamps, timezone, nap flag, score state, `run_id`
+  - columns: timestamps, timezone, nap flag, score state, `local_date`, `run_id`
 
 - `sleep_score`
   - one-to-one with `sleep_records`
@@ -58,6 +61,7 @@ Schema source of truth: `src/export/schema.sql`
 - `recovery_records`
   - parent table for recovery events
   - PK: `cycle_id`
+  - columns include `local_date` (aligned to sleep wake day when available)
 
 - `recovery_score`
   - one-to-one with `recovery_records`
@@ -68,6 +72,7 @@ Schema source of truth: `src/export/schema.sql`
 - `workout_records`
   - parent table for workout events
   - PK: `id`
+  - columns include `local_date` (local day derived from workout timestamps)
 
 - `workout_score`
   - one-to-one with `workout_records`
@@ -93,6 +98,9 @@ Schema source of truth: `src/export/schema.sql`
 - `idx_recovery_records_run_id`
 - `idx_workout_records_run_id`
 - `idx_cycle_records_run_id`
+- `idx_sleep_records_local_date`
+- `idx_recovery_records_local_date`
+- `idx_workout_records_local_date`
 
 ## Relationship overview
 
