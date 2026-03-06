@@ -4,6 +4,7 @@ import { runDumpCommand } from "./commands/dump";
 import { runLoginCommand } from "./commands/login";
 import { runServerCommand } from "./commands/server";
 import { getErrorCauseMessages, isAppError } from "./util/errors";
+import { createLogger } from "./util/logger";
 
 function printRootHelp(): void {
   process.stdout.write(`whoosh\n\nUsage:\n  whoosh <command> [options]\n\nCommands:\n  login   Run OAuth login flow and save token file\n  dump    Fetch Whoop data once and export it\n  server  Run scheduled token refresh + data export\n\nGlobal options:\n  --config <path>        TOML config file path\n  --credentials <path>   Token file path (default: token.toml)\n  -d, --debug <level>    debug|info|warn|error\n  --help                 Show help\n\nRun command help:\n  whoosh <command> --help\n`);
@@ -171,18 +172,33 @@ async function main(argv: string[]): Promise<void> {
   }
 }
 
+const logger = createLogger();
+
+process.on("uncaughtException", (error) => {
+  logger.error("Uncaught exception", {
+    error: error instanceof Error ? error.message : String(error),
+  });
+});
+
+process.on("unhandledRejection", (error) => {
+  logger.error("Unhandled rejection", {
+    error: error instanceof Error ? error.message : String(error),
+  });
+});
+
 main(Bun.argv).catch((error) => {
   if (isAppError(error)) {
-    process.stderr.write(`ERROR [${error.code}] ${error.message}\n`);
-    const causes = getErrorCauseMessages(error).slice(1);
-    if (causes.length > 0) {
-      process.stderr.write(`CAUSE ${causes.join(" <- ")}\n`);
-    }
+    logger.error("Command failed", {
+      code: error.code,
+      error: error.message,
+      causes: getErrorCauseMessages(error).slice(1),
+    });
     process.exit(1);
     return;
   }
 
-  const message = error instanceof Error ? error.message : String(error);
-  process.stderr.write(`ERROR ${message}\n`);
+  logger.error("Command failed", {
+    error: error instanceof Error ? error.message : String(error),
+  });
   process.exit(1);
 });

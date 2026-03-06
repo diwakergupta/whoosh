@@ -17,6 +17,15 @@ Minimal Bun CLI focused on reliability and ownership of Whoop data.
 - OAuth library: openid-client
 - DB: `bun:sqlite` with WAL mode
 
+## Logging
+
+whoosh uses `pino` with `pino-pretty` for structured, single-line logs with timestamps.
+
+- Service name is fixed to `whoosh`
+- Level comes from `LOG_LEVEL` (defaults to `info`)
+- Sensitive values are redacted (tokens/cookies/auth headers)
+- Login callback server logs request start/end/error with `reqId` (`x-request-id` or generated UUID)
+
 ## Install
 
 ```bash

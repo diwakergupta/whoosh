@@ -1,59 +1,76 @@
+import pino, { type Logger as PinoLogger } from "pino";
+
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
-const LEVEL_WEIGHT: Record<LogLevel, number> = {
-  debug: 10,
-  info: 20,
-  warn: 30,
-  error: 40,
-};
+const REDACT_PATHS = [
+  "authorization",
+  "cookie",
+  "set-cookie",
+  "token",
+  "apiKey",
+  "headers.authorization",
+  "headers.cookie",
+  "headers['set-cookie']",
+  "req.headers.authorization",
+  "req.headers.cookie",
+  "req.headers['set-cookie']",
+  "request.headers.authorization",
+  "request.headers.cookie",
+  "request.headers['set-cookie']",
+] as const;
 
-function toLogLevel(level: string): LogLevel {
-  const normalized = level.toLowerCase();
-  if (normalized === "debug" || normalized === "info" || normalized === "warn" || normalized === "error") {
-    return normalized;
+function resolveLevel(level?: string): LogLevel {
+  const resolved = (level ?? process.env.LOG_LEVEL ?? "info").toLowerCase();
+  if (resolved === "debug" || resolved === "info" || resolved === "warn" || resolved === "error") {
+    return resolved;
   }
   return "info";
 }
 
 export class Logger {
-  private readonly level: LogLevel;
+  constructor(private readonly inner: PinoLogger) {}
 
-  constructor(level: string = "info") {
-    this.level = toLogLevel(level);
+  child(bindings: Record<string, unknown>): Logger {
+    return new Logger(this.inner.child(bindings));
   }
 
   debug(message: string, context?: Record<string, unknown>): void {
-    this.log("debug", message, context);
+    this.inner.debug(context ?? {}, message);
   }
 
   info(message: string, context?: Record<string, unknown>): void {
-    this.log("info", message, context);
+    this.inner.info(context ?? {}, message);
   }
 
   warn(message: string, context?: Record<string, unknown>): void {
-    this.log("warn", message, context);
+    this.inner.warn(context ?? {}, message);
   }
 
   error(message: string, context?: Record<string, unknown>): void {
-    this.log("error", message, context);
-  }
-
-  private log(level: LogLevel, message: string, context?: Record<string, unknown>): void {
-    if (LEVEL_WEIGHT[level] < LEVEL_WEIGHT[this.level]) {
-      return;
-    }
-
-    const stamp = new Date().toISOString();
-    if (!context || Object.keys(context).length === 0) {
-      // eslint-disable-next-line no-console
-      console.log(`${stamp} ${level.toUpperCase()} ${message}`);
-      return;
-    }
-    // eslint-disable-next-line no-console
-    console.log(`${stamp} ${level.toUpperCase()} ${message}`, context);
+    this.inner.error(context ?? {}, message);
   }
 }
 
-export function createLogger(level: string): Logger {
-  return new Logger(level);
+export function createLogger(level?: string): Logger {
+  const inner = pino(
+    {
+      name: "whoosh",
+      level: resolveLevel(level),
+      timestamp: pino.stdTimeFunctions.isoTime,
+      redact: {
+        paths: [...REDACT_PATHS],
+        censor: "[REDACTED]",
+      },
+    },
+    pino.transport({
+      target: "pino-pretty",
+      options: {
+        colorize: true,
+        singleLine: true,
+        translateTime: "SYS:standard",
+      },
+    }),
+  );
+
+  return new Logger(inner);
 }

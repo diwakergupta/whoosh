@@ -25,6 +25,11 @@ export interface LoginCliOptions {
   redirectPath?: string;
 }
 
+function requestIdFrom(request: Request): string {
+  const header = request.headers.get("x-request-id")?.trim();
+  return header ? header : crypto.randomUUID();
+}
+
 function renderTemplate(template: string, replacements: Record<string, string>): string {
   let result = template;
   for (const [key, value] of Object.entries(replacements)) {
@@ -135,71 +140,136 @@ async function runLocalServerLoginFlow(params: {
     rejectDone = reject;
   });
 
+  const uncaughtHandler = (error: unknown): void => {
+    params.logger.error("Login server uncaught exception", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    if (!settled) {
+      settled = true;
+      rejectDone?.(error);
+    }
+    setTimeout(() => server.stop(true), 250);
+  };
+
+  const unhandledRejectionHandler = (error: unknown): void => {
+    params.logger.error("Login server unhandled rejection", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    if (!settled) {
+      settled = true;
+      rejectDone?.(error);
+    }
+    setTimeout(() => server.stop(true), 250);
+  };
+
+  process.once("uncaughtException", uncaughtHandler);
+  process.once("unhandledRejection", unhandledRejectionHandler);
+
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: params.port,
     fetch: async (request) => {
+      const reqId = requestIdFrom(request);
+      const started = Date.now();
       const url = new URL(request.url);
+      const requestLogger = params.logger.child({
+        reqId,
+        method: request.method,
+        path: url.pathname,
+      });
 
-      if (url.pathname === "/") {
-        return htmlResponse(renderTemplate(INDEX_TEMPLATE, { AUTH_URL: params.authUrl.toString() }));
-      }
+      requestLogger.info("HTTP request started");
 
-      if (url.pathname === params.redirectPath) {
-        try {
-          validateAuthorizationCallback({
-            callbackUrl: url,
-            expectedState: params.expectedState,
-            expectedPath: params.redirectPath,
-          });
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          const body = renderTemplate(ERROR_TEMPLATE, {
-            STATUS_CODE: "400",
-            ERROR_MESSAGE: message,
-          });
-          return htmlResponse(body, 400);
+      try {
+        if (url.pathname === "/") {
+          const response = htmlResponse(renderTemplate(INDEX_TEMPLATE, { AUTH_URL: params.authUrl.toString() }));
+          requestLogger.info("HTTP request completed", { statusCode: response.status, durationMs: Date.now() - started });
+          return response;
         }
 
-        try {
-          const token = await exchangeAndPersistToken({
-            oauthClient: params.oauthClient,
-            callbackUrl: url,
-            expectedState: params.expectedState,
-            redirectUri: params.redirectUri,
-            credentialsFile: params.credentialsFile,
-          });
-
-          const body = renderTemplate(REDIRECT_TEMPLATE, {
-            CREDENTIALS_FILE: params.credentialsFile,
-            TOKEN_BODY: serializeTokenToml(token),
-          });
-
-          if (!settled) {
-            settled = true;
-            resolveDone?.();
-            setTimeout(() => server.stop(true), 250);
+        if (url.pathname === params.redirectPath) {
+          try {
+            validateAuthorizationCallback({
+              callbackUrl: url,
+              expectedState: params.expectedState,
+              expectedPath: params.redirectPath,
+            });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            const body = renderTemplate(ERROR_TEMPLATE, {
+              STATUS_CODE: "400",
+              ERROR_MESSAGE: message,
+            });
+            const response = htmlResponse(body, 400);
+            requestLogger.warn("OAuth callback validation failed", {
+              statusCode: response.status,
+              durationMs: Date.now() - started,
+              error: message,
+            });
+            return response;
           }
 
-          return htmlResponse(body, 200);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          const body = renderTemplate(ERROR_TEMPLATE, {
-            STATUS_CODE: "500",
-            ERROR_MESSAGE: message,
-          });
+          try {
+            const token = await exchangeAndPersistToken({
+              oauthClient: params.oauthClient,
+              callbackUrl: url,
+              expectedState: params.expectedState,
+              redirectUri: params.redirectUri,
+              credentialsFile: params.credentialsFile,
+            });
 
-          if (!settled) {
-            settled = true;
-            rejectDone?.(error);
-            setTimeout(() => server.stop(true), 250);
+            const body = renderTemplate(REDIRECT_TEMPLATE, {
+              CREDENTIALS_FILE: params.credentialsFile,
+              TOKEN_BODY: serializeTokenToml(token),
+            });
+
+            if (!settled) {
+              settled = true;
+              resolveDone?.();
+              setTimeout(() => server.stop(true), 250);
+            }
+
+            const response = htmlResponse(body, 200);
+            requestLogger.info("HTTP request completed", { statusCode: response.status, durationMs: Date.now() - started });
+            return response;
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            const body = renderTemplate(ERROR_TEMPLATE, {
+              STATUS_CODE: "500",
+              ERROR_MESSAGE: message,
+            });
+
+            if (!settled) {
+              settled = true;
+              rejectDone?.(error);
+              setTimeout(() => server.stop(true), 250);
+            }
+
+            const response = htmlResponse(body, 500);
+            requestLogger.error("OAuth token exchange failed", {
+              statusCode: response.status,
+              durationMs: Date.now() - started,
+              error: message,
+            });
+            return response;
           }
-
-          return htmlResponse(body, 500);
         }
-      }
 
-      return new Response("Not Found", { status: 404 });
+        const response = new Response("Not Found", { status: 404 });
+        requestLogger.info("HTTP request completed", { statusCode: response.status, durationMs: Date.now() - started });
+        return response;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        requestLogger.error("HTTP request crashed", {
+          statusCode: 500,
+          durationMs: Date.now() - started,
+          error: message,
+        });
+        return htmlResponse(renderTemplate(ERROR_TEMPLATE, {
+          STATUS_CODE: "500",
+          ERROR_MESSAGE: "Internal server error",
+        }), 500);
+      }
     },
   });
 
@@ -221,7 +291,12 @@ async function runLocalServerLoginFlow(params: {
     params.logger.info(`Open ${params.baseUrl} in your browser to authenticate.`);
   }
 
-  await done;
+  try {
+    await done;
+  } finally {
+    process.removeListener("uncaughtException", uncaughtHandler);
+    process.removeListener("unhandledRejection", unhandledRejectionHandler);
+  }
 }
 
 export async function runLoginCommand(cli: LoginCliOptions): Promise<void> {
