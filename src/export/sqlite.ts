@@ -9,7 +9,7 @@ const SCHEMA_VERSION = 1;
 
 export interface SqliteExportOptions {
   dbPath: string;
-  mode: "dump" | "server";
+  mode: "sync" | "server";
   filter?: string;
   logger?: Logger;
 }
@@ -42,6 +42,10 @@ function applySchema(db: Database, schemaSql: string): void {
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function isValidTimestamp(value: string | null | undefined): value is string {
+  return typeof value === "string" && !Number.isNaN(new Date(value).getTime());
 }
 
 function pad2(value: number): string {
@@ -208,6 +212,48 @@ function markDumpRunFailed(db: Database, mode: string, filter: string | undefine
   db.query(
     "INSERT INTO dump_runs (mode, filter, started_at, finished_at, status, error) VALUES (?, ?, ?, ?, ?, ?)",
   ).run(mode, filter ?? null, nowIso(), nowIso(), "failed", errorMessage);
+}
+
+function deriveSyncBoundary(filter: string | null | undefined, finishedAt: string | null | undefined): string | undefined {
+  if (filter) {
+    const params = new URLSearchParams(filter);
+    const end = params.get("end");
+    if (isValidTimestamp(end)) {
+      return end;
+    }
+  }
+
+  if (isValidTimestamp(finishedAt)) {
+    return finishedAt;
+  }
+
+  return undefined;
+}
+
+export async function getLastSuccessfulSyncBoundary(dbPath: string): Promise<string | undefined> {
+  try {
+    await fs.access(dbPath);
+  } catch {
+    return undefined;
+  }
+
+  const db = new Database(dbPath, { readonly: true });
+
+  try {
+    const row = db.query(
+      "SELECT filter, finished_at FROM dump_runs WHERE status = ? ORDER BY id DESC LIMIT 1",
+    ).get("success") as { filter: string | null; finished_at: string | null } | null;
+
+    if (!row) {
+      return undefined;
+    }
+
+    return deriveSyncBoundary(row.filter, row.finished_at);
+  } catch {
+    return undefined;
+  } finally {
+    db.close(false);
+  }
 }
 
 function upsertUserProfile(db: Database, runId: number, dump: WhoopDump): void {

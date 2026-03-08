@@ -4,6 +4,17 @@ import { isTokenExpired, normalizeToken, readTokenFile, writeTokenFile } from ".
 import { requireWhoopClientCredentials, resolveConfig } from "../config/config";
 import { exportToJson } from "../export/json";
 import { exportToSqlite } from "../export/sqlite";
+import {
+  createHealthState,
+  markHealthReady,
+  markHealthShuttingDown,
+  markRefreshFailure,
+  markRefreshSuccess,
+  markSyncFailure,
+  markSyncSuccess,
+  startHealthServer,
+} from "../server/health";
+import { planSyncWindow } from "../sync/planner";
 import { AppError, isAppError, isAuthError } from "../util/errors";
 import { createLogger } from "../util/logger";
 import { buildFilter, last24HoursRange } from "../util/time";
@@ -19,6 +30,7 @@ export interface ServerCliOptions {
   jsonPath?: string;
   crontab?: string;
   jwtRefreshMinutes?: string;
+  healthPort?: string;
 }
 
 function isRetryable(error: unknown): boolean {
@@ -74,11 +86,21 @@ export async function runServerCommand(cli: ServerCliOptions): Promise<void> {
       jsonPath: cli.jsonPath,
       crontab: cli.crontab,
       jwtRefreshMinutes: cli.jwtRefreshMinutes,
+      healthPort: cli.healthPort,
     },
   });
 
   const logger = createLogger(config.debug);
   const { clientId, clientSecret } = requireWhoopClientCredentials(config);
+  const healthState = createHealthState({
+    credentialsFile: config.credentialsFile,
+    refreshIntervalMinutes: config.server.jwtRefreshMinutes,
+  });
+  const healthServer = startHealthServer({
+    port: config.server.healthPort,
+    logger,
+    state: healthState,
+  });
 
   let settled = false;
   let resolveDone: (() => void) | undefined;
@@ -105,12 +127,15 @@ export async function runServerCommand(cli: ServerCliOptions): Promise<void> {
         clientSecret,
         logger,
       });
+      markRefreshSuccess(healthState);
       logger.info("Token refresh successful", { reason });
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      markRefreshFailure(healthState, errorMessage);
       if (isAuthError(error)) {
         logger.error("Token refresh failed with unrecoverable auth error", {
           reason,
-          error: error instanceof Error ? error.message : String(error),
+          error: errorMessage,
         });
         fatal(error);
         return;
@@ -118,18 +143,18 @@ export async function runServerCommand(cli: ServerCliOptions): Promise<void> {
 
       logger.warn("Token refresh failed (transient). Server will continue.", {
         reason,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage,
       });
     }
   }
 
-  async function runDumpJob(reason: string): Promise<void> {
+  async function runSyncJob(reason: string): Promise<void> {
     try {
       let token = normalizeToken(await readTokenFile(config.credentialsFile));
 
       if (isTokenExpired(token)) {
-        logger.warn("Token is expired before dump. Triggering refresh.", { reason });
-        await runRefreshJob("pre-dump");
+        logger.warn("Token is expired before sync. Triggering refresh.", { reason });
+        await runRefreshJob("pre-sync");
         token = normalizeToken(await readTokenFile(config.credentialsFile));
       }
 
@@ -137,41 +162,67 @@ export async function runServerCommand(cli: ServerCliOptions): Promise<void> {
         throw new AppError("Token remains expired after refresh attempt.", "AUTH");
       }
 
-      const { start, end } = last24HoursRange();
-      const filter = buildFilter(start, end);
+      const plan = config.export.output === "sqlite"
+        ? await planSyncWindow({
+          output: config.export.output,
+          dbPath: config.export.sqlitePath,
+        })
+        : (() => {
+          const { start, end } = last24HoursRange();
+          return {
+            mode: "incremental" as const,
+            filter: buildFilter(start, end),
+            start,
+            end,
+          };
+        })();
+
+      if (plan.mode === "full") {
+        logger.info("No prior sync state found for scheduled run. Running full sync.", { reason });
+      } else {
+        logger.info("Running scheduled incremental sync", {
+          reason,
+          start: plan.start,
+          end: plan.end,
+        });
+      }
+
       const client = new WhoopClient({
         accessToken: token.accessToken,
         userAgent: "whoosh/0.1.0",
         logger,
       });
 
-      const dump = await client.collectDump(filter);
+      const dump = await client.collectDump(plan.filter);
 
       if (config.export.output === "sqlite") {
         await exportToSqlite(dump, {
           dbPath: config.export.sqlitePath as string,
           mode: "server",
-          filter,
+          filter: plan.filter,
           logger,
         });
       } else {
         await exportToJson(dump, config.export.jsonPath as string, logger);
       }
 
-      logger.info("Scheduled dump completed", { reason });
+      markSyncSuccess(healthState);
+      logger.info("Scheduled sync completed", { reason });
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      markSyncFailure(healthState, errorMessage);
       if (isAuthError(error)) {
-        logger.error("Data collection failed with auth error. Server will exit.", {
+        logger.error("Sync failed with auth error. Server will exit.", {
           reason,
-          error: error instanceof Error ? error.message : String(error),
+          error: errorMessage,
         });
         fatal(error);
         return;
       }
 
-      logger.warn("Data collection failed with transient/fatal non-auth error; server will continue.", {
+      logger.warn("Sync failed with transient/fatal non-auth error; server will continue.", {
         reason,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage,
       });
     }
   }
@@ -195,30 +246,33 @@ export async function runServerCommand(cli: ServerCliOptions): Promise<void> {
     },
   );
 
-  const dumpCron = new Cron(
+  const syncCron = new Cron(
     config.server.crontab,
     {
       protect: true,
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       catch: (error) => {
-        logger.warn("Unhandled dump cron callback error", {
+        logger.warn("Unhandled sync cron callback error", {
           error: error instanceof Error ? error.message : String(error),
         });
       },
     },
     () => {
-      void runDumpJob("scheduled-dump");
+      void runSyncJob("scheduled-sync");
     },
   );
 
   logger.info("Server mode started", {
     crontab: config.server.crontab,
     jwtRefreshMinutes: config.server.jwtRefreshMinutes,
+    healthPort: config.server.healthPort,
     output: config.export.output,
   });
+  markHealthReady(healthState);
 
   const handleSignal = (signal: NodeJS.Signals): void => {
     logger.info("Shutdown signal received", { signal });
+    markHealthShuttingDown(healthState);
     if (!settled) {
       settled = true;
       resolveDone?.();
@@ -231,10 +285,13 @@ export async function runServerCommand(cli: ServerCliOptions): Promise<void> {
   try {
     await done;
   } finally {
+    markHealthShuttingDown(healthState);
+    healthServer.stop(true);
     refreshCron.stop();
-    dumpCron.stop();
+    syncCron.stop();
     process.removeListener("SIGINT", handleSignal);
     process.removeListener("SIGTERM", handleSignal);
+    logger.info("Health endpoint stopped");
     logger.info("Server mode stopped");
   }
 }

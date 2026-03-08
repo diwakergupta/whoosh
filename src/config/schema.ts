@@ -28,5 +28,12 @@ export function validateAppConfig(value: unknown): AppConfig {
     }
   }
 
+  if (config.server?.health_port !== undefined) {
+    const value = config.server.health_port;
+    if (!Number.isFinite(value) || value <= 0 || value > 65535) {
+      throw new AppError("server.health_port must be between 1 and 65535.", "CONFIG");
+    }
+  }
+
   return config;
 }

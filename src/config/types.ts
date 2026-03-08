@@ -20,6 +20,7 @@ export interface AppConfig {
     enabled?: boolean;
     crontab?: string;
     jwt_refresh_minutes?: number;
+    health_port?: number;
   };
 }
 
@@ -43,11 +44,12 @@ export interface ResolvedConfig {
   server: {
     crontab: string;
     jwtRefreshMinutes: number;
+    healthPort: number;
   };
 }
 
 export interface ResolveConfigInput {
-  command: "login" | "dump" | "server";
+  command: "login" | "dump" | "sync" | "server";
   cli: {
     configPath?: string;
     credentialsFile?: string;
@@ -57,6 +59,7 @@ export interface ResolveConfigInput {
     jsonPath?: string;
     crontab?: string;
     jwtRefreshMinutes?: string | number;
+    healthPort?: string | number;
   };
   cwd?: string;
   env?: NodeJS.ProcessEnv;

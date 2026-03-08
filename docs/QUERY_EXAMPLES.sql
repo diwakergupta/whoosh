@@ -1,4 +1,4 @@
--- 1) Latest 20 dump runs
+-- 1) Latest 20 sync runs
 SELECT id, mode, status, started_at, finished_at, error
 FROM dump_runs
 ORDER BY id DESC

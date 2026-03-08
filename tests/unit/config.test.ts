@@ -28,7 +28,7 @@ describe("resolveConfig", () => {
     );
 
     const config = await resolveConfig({
-      command: "dump",
+      command: "sync",
       cli: { configPath },
       cwd: dir,
       env: {},
@@ -51,7 +51,7 @@ describe("resolveConfig", () => {
     );
 
     const config = await resolveConfig({
-      command: "dump",
+      command: "sync",
       cli: {
         configPath,
         output: "json",
@@ -65,12 +65,40 @@ describe("resolveConfig", () => {
     expect(config.export.jsonPath).toBe(path.join(dir, "new.json"));
   });
 
+  it("resolves the server health port from config and CLI", async () => {
+    const dir = await makeTempDir();
+    const configPath = path.join(dir, "whoosh.toml");
+
+    await fs.writeFile(
+      configPath,
+      `[export]\noutput = "sqlite"\n\n[export.sqlite]\npath = "data.sqlite"\n\n[server]\nhealth_port = 9911\n`,
+      "utf8",
+    );
+
+    const fromConfig = await resolveConfig({
+      command: "server",
+      cli: { configPath },
+      cwd: dir,
+      env: {},
+    });
+
+    const fromCli = await resolveConfig({
+      command: "server",
+      cli: { configPath, healthPort: "9922" },
+      cwd: dir,
+      env: {},
+    });
+
+    expect(fromConfig.server.healthPort).toBe(9911);
+    expect(fromCli.server.healthPort).toBe(9922);
+  });
+
   it("fails when sqlite output has no path", async () => {
     const dir = await makeTempDir();
 
     await expect(
       resolveConfig({
-        command: "dump",
+        command: "sync",
         cli: {},
         cwd: dir,
         env: {},
@@ -83,7 +111,7 @@ describe("resolveConfig", () => {
 
     await expect(
       resolveConfig({
-        command: "dump",
+        command: "sync",
         cli: {
           output: "json",
         },
@@ -103,5 +131,22 @@ describe("resolveConfig", () => {
     });
 
     expect(config.credentialsFile).toBe(path.join(dir, "token.toml"));
+  });
+
+  it("fails when health port is invalid", async () => {
+    const dir = await makeTempDir();
+
+    await expect(
+      resolveConfig({
+        command: "server",
+        cli: {
+          output: "json",
+          jsonPath: path.join(dir, "whoosh.json"),
+          healthPort: "70000",
+        },
+        cwd: dir,
+        env: {},
+      }),
+    ).rejects.toThrow("health port must be between 1 and 65535");
   });
 });

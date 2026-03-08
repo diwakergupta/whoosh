@@ -1,25 +1,25 @@
 #!/usr/bin/env bun
 import { parseArgs } from "node:util";
-import { runDumpCommand } from "./commands/dump";
 import { runLoginCommand } from "./commands/login";
 import { runServerCommand } from "./commands/server";
+import { runSyncCommand } from "./commands/sync";
 import { getErrorCauseMessages, isAppError } from "./util/errors";
 import { createLogger } from "./util/logger";
 
 function printRootHelp(): void {
-  process.stdout.write(`whoosh\n\nUsage:\n  whoosh <command> [options]\n\nCommands:\n  login   Run OAuth login flow and save token file\n  dump    Fetch Whoop data once and export it\n  server  Run scheduled token refresh + data export\n\nGlobal options:\n  --config <path>        TOML config file path\n  --credentials <path>   Token file path (default: token.toml)\n  -d, --debug <level>    debug|info|warn|error\n  --help                 Show help\n\nRun command help:\n  whoosh <command> --help\n`);
+  process.stdout.write(`whoosh\n\nUsage:\n  whoosh <command> [options]\n\nCommands:\n  login   Run OAuth login flow and save token file\n  sync    Fetch Whoop data and export it (full first run, incremental afterward)\n  server  Run scheduled token refresh + data sync\n\nGlobal options:\n  --config <path>        TOML config file path\n  --credentials <path>   Token file path (default: token.toml)\n  -d, --debug <level>    debug|info|warn|error\n  --help                 Show help\n\nRun command help:\n  whoosh <command> --help\n`);
 }
 
 function printLoginHelp(): void {
   process.stdout.write(`Usage: whoosh login [options]\n\nOptions:\n  --config <path>\n  --credentials <path>\n  -d, --debug <level>\n  -p, --port <port>                  Default: 8080\n  -r, --redirect-path <path>         Default: /redirect\n  -m, --manual                       Paste callback URL instead of running local callback server\n  -n, --no-auto-open                 Do not auto-open browser\n  --help\n`);
 }
 
-function printDumpHelp(): void {
-  process.stdout.write(`Usage: whoosh dump [options]\n\nOptions:\n  --config <path>\n  --credentials <path>\n  -d, --debug <level>\n  -f, --filter <query>               Whoop filter query string\n  -o, --output <sqlite|json>         Default: sqlite\n  --db <path>                        Required when output=sqlite\n  --json-path <path>                 Required when output=json\n  --help\n`);
+function printSyncHelp(): void {
+  process.stdout.write(`Usage: whoosh sync [options]\n\nOptions:\n  --config <path>\n  --credentials <path>\n  -d, --debug <level>\n  -f, --filter <query>               Whoop filter query string (overrides incremental default)\n  -o, --output <sqlite|json>         Default: sqlite\n  --db <path>                        Required when output=sqlite\n  --json-path <path>                 Required when output=json\n  --help\n`);
 }
 
 function printServerHelp(): void {
-  process.stdout.write(`Usage: whoosh server [options]\n\nOptions:\n  --config <path>\n  --credentials <path>\n  -d, --debug <level>\n  -o, --output <sqlite|json>         Default: sqlite\n  --db <path>                        Required when output=sqlite\n  --json-path <path>                 Required when output=json\n  --crontab <expr>                   Default: 0 13 * * *\n  --jwt-refresh-minutes <1-59>       Default: 45\n  --help\n`);
+  process.stdout.write(`Usage: whoosh server [options]\n\nOptions:\n  --config <path>\n  --credentials <path>\n  -d, --debug <level>\n  -o, --output <sqlite|json>         Default: sqlite\n  --db <path>                        Required when output=sqlite\n  --json-path <path>                 Required when output=json\n  --crontab <expr>                   Default: 0 13 * * *\n  --jwt-refresh-minutes <1-59>       Default: 45\n  --health-port <port>               Default: 8787 (serves /health on 127.0.0.1)\n  --help\n`);
 }
 
 function extractCommand(args: string[]): { command?: string; commandArgs: string[] } {
@@ -99,6 +99,7 @@ async function main(argv: string[]): Promise<void> {
       return;
     }
 
+    case "sync":
     case "dump": {
       const parsed = parseArgs({
         args: commandArgs,
@@ -116,11 +117,11 @@ async function main(argv: string[]): Promise<void> {
       });
 
       if (parsed.values.help) {
-        printDumpHelp();
+        printSyncHelp();
         return;
       }
 
-      await runDumpCommand({
+      await runSyncCommand({
         configPath: parsed.values.config,
         credentialsFile: parsed.values.credentials,
         debug: parsed.values.debug,
@@ -144,6 +145,7 @@ async function main(argv: string[]): Promise<void> {
           "json-path": { type: "string" },
           crontab: { type: "string" },
           "jwt-refresh-minutes": { type: "string" },
+          "health-port": { type: "string" },
           help: { type: "boolean" },
         },
         strict: true,
@@ -163,6 +165,7 @@ async function main(argv: string[]): Promise<void> {
         jsonPath: parsed.values["json-path"],
         crontab: parsed.values.crontab,
         jwtRefreshMinutes: parsed.values["jwt-refresh-minutes"],
+        healthPort: parsed.values["health-port"],
       });
       return;
     }

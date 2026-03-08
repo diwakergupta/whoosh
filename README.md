@@ -5,7 +5,7 @@ Minimal Bun CLI focused on reliability and ownership of Whoop data.
 ## Features
 
 - OAuth login flow (`login`)
-- one-shot data collection (`dump`)
+- one-shot and incremental data sync (`sync`)
 - scheduled server mode with periodic token refresh (`server`)
 - SQLite export by default
 - optional JSON export
@@ -93,6 +93,7 @@ path = "./data/whoosh.json"
 [server]
 crontab = "0 13 * * *"
 jwt_refresh_minutes = 45
+health_port = 8787
 ```
 
 ## Token format
@@ -120,16 +121,18 @@ bun run src/cli.ts login --manual --no-auto-open
 
 In manual mode, `whoosh` prints an authorization URL for your local browser. After authentication, the browser may show a redirect failure page; copy the full redirect URL and paste it back into the CLI prompt to complete token exchange.
 
-### Dump (SQLite)
+### Sync (SQLite)
 
 ```bash
-bun run src/cli.ts dump --db ./data/whoosh.sqlite
+bun run src/cli.ts sync --db ./data/whoosh.sqlite
 ```
 
-### Dump (JSON)
+If the SQLite database already exists, `sync` resumes from the last successful sync boundary. The first run against a new database performs a full historical sync.
+
+### Sync (JSON)
 
 ```bash
-bun run src/cli.ts dump --output json --json-path ./data/whoosh.json
+bun run src/cli.ts sync --output json --json-path ./data/whoosh.json
 ```
 
 ### Server mode
@@ -138,12 +141,35 @@ bun run src/cli.ts dump --output json --json-path ./data/whoosh.json
 bun run src/cli.ts server --db ./data/whoosh.sqlite
 ```
 
+In `server` mode, whoosh also serves `http://127.0.0.1:8787/health` by default. Override the port with `--health-port` or `[server].health_port`. The endpoint returns `200` only when startup has completed, the token file is present, the token is still valid, and a refresh has succeeded recently enough for the configured refresh cadence.
+
+Example `process-compose.yaml` healthcheck using [`http_get`](https://f1bonacc1.github.io/process-compose/health/):
+
+```yaml
+processes:
+  whoosh:
+    command: bun run src/cli.ts server --db ./data/whoosh.sqlite
+    availability:
+      restart: always
+    readiness_probe:
+      http_get:
+        host: 127.0.0.1
+        port: 8787
+        path: /health
+      initial_delay_seconds: 2
+      period_seconds: 10
+      timeout_seconds: 2
+      success_threshold: 1
+      failure_threshold: 3
+```
+
 ## Behavior notes
 
 - Endpoint fetches are sequential to avoid API burst spikes.
 - Retry logic covers transient network/rate-limit/server errors.
 - Unrecoverable auth failures are treated as fatal in server mode.
-- Dump/server commands require explicit output path via CLI or config.
+- Sync/server commands require explicit output path via CLI or config.
+- Server mode exposes a localhost `/health` endpoint for supervisors such as process-compose.
 
 ## Database schema
 

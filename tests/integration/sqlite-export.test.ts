@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { exportToSqlite } from "../../src/export/sqlite";
+import { exportToSqlite, getLastSuccessfulSyncBoundary } from "../../src/export/sqlite";
 import { createSampleDump } from "../fixtures/sample-dump";
 
 const tempDirs: string[] = [];
@@ -26,14 +26,14 @@ describe("exportToSqlite", () => {
     const dump = createSampleDump();
     await exportToSqlite(dump, {
       dbPath,
-      mode: "dump",
+      mode: "sync",
       filter: "start=2026-01-01T00:00:00.000Z",
     });
 
     dump.user_data.first_name = "Updated";
     await exportToSqlite(dump, {
       dbPath,
-      mode: "dump",
+      mode: "sync",
     });
 
     const db = new Database(dbPath, { readonly: true });
@@ -87,7 +87,7 @@ describe("exportToSqlite", () => {
 
     await exportToSqlite(dump, {
       dbPath,
-      mode: "dump",
+      mode: "sync",
     });
 
     const db = new Database(dbPath, { readonly: true });
@@ -123,7 +123,7 @@ describe("exportToSqlite", () => {
 
     await exportToSqlite(dump, {
       dbPath,
-      mode: "dump",
+      mode: "sync",
     });
 
     const db = new Database(dbPath, { readonly: true });
@@ -135,5 +135,25 @@ describe("exportToSqlite", () => {
     } finally {
       db.close(false);
     }
+  });
+
+  it("derives the next incremental boundary from the latest successful run", async () => {
+    const dir = await makeTempDir();
+    const dbPath = path.join(dir, "whoosh.sqlite");
+
+    await exportToSqlite(createSampleDump(), {
+      dbPath,
+      mode: "sync",
+    });
+
+    await exportToSqlite(createSampleDump(), {
+      dbPath,
+      mode: "server",
+      filter: "start=2026-03-01T00:00:00.000Z&end=2026-03-02T00:00:00.000Z",
+    });
+
+    const boundary = await getLastSuccessfulSyncBoundary(dbPath);
+
+    expect(boundary).toBe("2026-03-02T00:00:00.000Z");
   });
 });

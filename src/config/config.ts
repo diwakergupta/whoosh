@@ -5,6 +5,7 @@ import {
   DEFAULT_CONFIG_FILENAME,
   DEFAULT_CREDENTIALS_FILE,
   DEFAULT_DEBUG_LEVEL,
+  DEFAULT_HEALTH_PORT,
   DEFAULT_JWT_REFRESH_MINUTES,
   DEFAULT_OUTPUT_FORMAT,
   DEFAULT_SERVER_CRONTAB,
@@ -100,6 +101,19 @@ function toJwtRefreshMinutes(value: string | number | undefined): number {
   return parsed;
 }
 
+function toPort(value: string | number | undefined, fallback: number, fieldName: string): number {
+  if (value === undefined || value === null || value === "") {
+    return fallback;
+  }
+
+  const parsed = typeof value === "number" ? value : Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 65535) {
+    throw new AppError(`${fieldName} must be between 1 and 65535.`, "VALIDATION");
+  }
+
+  return parsed;
+}
+
 function requireExporterPath(output: "sqlite" | "json", sqlitePath: string | undefined, jsonPath: string | undefined): void {
   if (output === "sqlite" && !sqlitePath) {
     throw new AppError("SQLite export requires a path. Set --db or export.sqlite.path in config.", "VALIDATION");
@@ -136,12 +150,13 @@ export async function resolveConfig(input: ResolveConfigInput): Promise<Resolved
   const sqlitePath = pickPath(input.cli.dbPath, cwd) ?? pickPath(exportBlock.sqlite?.path, configBaseDir);
   const jsonPath = pickPath(input.cli.jsonPath, cwd) ?? pickPath(exportBlock.json?.path, configBaseDir);
 
-  if (input.command === "dump" || input.command === "server") {
+  if (input.command === "dump" || input.command === "sync" || input.command === "server") {
     requireExporterPath(output, sqlitePath, jsonPath);
   }
 
   const crontab = input.cli.crontab ?? fileConfig.server?.crontab ?? DEFAULT_SERVER_CRONTAB;
   const jwtRefreshMinutes = toJwtRefreshMinutes(input.cli.jwtRefreshMinutes ?? fileConfig.server?.jwt_refresh_minutes);
+  const healthPort = toPort(input.cli.healthPort ?? fileConfig.server?.health_port, DEFAULT_HEALTH_PORT, "health port");
 
   return {
     debug,
@@ -157,6 +172,7 @@ export async function resolveConfig(input: ResolveConfigInput): Promise<Resolved
     server: {
       crontab,
       jwtRefreshMinutes,
+      healthPort,
     },
   };
 }

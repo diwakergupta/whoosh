@@ -22,7 +22,7 @@ Schema source of truth: `src/export/schema.sql`
   - columns: `version` (PK), `applied_at`
 
 - `dump_runs`
-  - one row per dump/server run
+  - one row per sync/server run
   - columns: `id` (PK), `mode`, `filter`, `started_at`, `finished_at`, `status`, `error`
 
 ## User tables
