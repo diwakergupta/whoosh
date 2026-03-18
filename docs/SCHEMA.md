@@ -33,9 +33,9 @@ Schema source of truth: `src/export/schema.sql`
   - columns: `email`, `first_name`, `last_name`, `run_id`, `updated_at`
 
 - `user_measurements`
-  - one row per user measurements snapshot
-  - PK: `user_id`
-  - columns: `height_meter`, `weight_kilogram`, `max_heart_rate`, `run_id`, `updated_at`
+  - snapshot per user measurements per run
+  - PK: `(user_id, run_id)`
+  - columns: `height_meter`, `weight_kilogram`, `max_heart_rate`, `updated_at`
 
 ## Sleep tables
 

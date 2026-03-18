@@ -19,13 +19,24 @@ SELECT p.user_id,
        m.height_meter,
        m.weight_kilogram,
        m.max_heart_rate,
-       p.updated_at
+       m.updated_at
 FROM user_profile p
-JOIN user_measurements m ON m.user_id = p.user_id
+JOIN user_measurements m ON m.user_id = p.user_id AND m.run_id = p.run_id
 ORDER BY p.updated_at DESC
 LIMIT 1;
 
--- 4) Sleep score trend (latest 30)
+-- 4) Weight and body measurements trend (latest 30 runs)
+SELECT r.started_at,
+       m.weight_kilogram,
+       m.height_meter,
+       m.max_heart_rate
+FROM user_measurements m
+JOIN dump_runs r ON r.id = m.run_id
+WHERE r.status = 'success'
+ORDER BY r.started_at DESC
+LIMIT 30;
+
+-- 5) Sleep score trend (latest 30)
 SELECT r.local_date AS day,
        r.start_time,
        s.sleep_performance_percentage,

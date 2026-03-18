@@ -17,6 +17,7 @@ export interface NormalizedToken {
   tokenType?: string;
   refreshToken?: string;
   scope?: string;
+  expiresIn?: number;
   expiresAt?: Date;
 }
 
@@ -171,6 +172,7 @@ export function normalizeToken(token: StoredToken): NormalizedToken {
     tokenType: token.token_type,
     refreshToken: token.refresh_token,
     scope: token.scope,
+    expiresIn: token.expires_in,
     expiresAt: parseExpiresAt(token),
   };
 }

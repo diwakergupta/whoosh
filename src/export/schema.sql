@@ -33,14 +33,15 @@ CREATE TABLE IF NOT EXISTS user_profile (
   FOREIGN KEY (run_id) REFERENCES dump_runs(id)
 );
 
--- User body measurements keyed by user id.
+-- User body measurements snapshot per run.
 CREATE TABLE IF NOT EXISTS user_measurements (
-  user_id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL,
   height_meter REAL,
   weight_kilogram REAL,
   max_heart_rate INTEGER,
   run_id INTEGER NOT NULL,
   updated_at TEXT NOT NULL,
+  PRIMARY KEY (user_id, run_id),
   FOREIGN KEY (run_id) REFERENCES dump_runs(id)
 );
 

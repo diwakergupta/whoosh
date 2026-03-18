@@ -5,7 +5,7 @@ import { AppError } from "../util/errors";
 import type { Logger } from "../util/logger";
 import type { CycleRecord, RecoveryRecord, SleepRecord, WhoopDump, WorkoutRecord } from "../whoop/types";
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 export interface SqliteExportOptions {
   dbPath: string;
@@ -35,6 +35,32 @@ function applyPragmas(db: Database): void {
 
 function applySchema(db: Database, schemaSql: string): void {
   db.exec(schemaSql);
+
+  const currentVersionRow = db.query(
+    "SELECT MAX(version) as version FROM schema_migrations",
+  ).get() as { version: number | null } | null;
+  const currentVersion = currentVersionRow?.version ?? 0;
+
+  if (currentVersion < 2) {
+    // Migration to version 2: Change user_measurements PK to (user_id, run_id).
+    // SQLite doesn't support changing PK on an existing table directly.
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS user_measurements_new (
+        user_id INTEGER NOT NULL,
+        height_meter REAL,
+        weight_kilogram REAL,
+        max_heart_rate INTEGER,
+        run_id INTEGER NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (user_id, run_id),
+        FOREIGN KEY (run_id) REFERENCES dump_runs(id)
+      );
+      INSERT INTO user_measurements_new SELECT * FROM user_measurements;
+      DROP TABLE user_measurements;
+      ALTER TABLE user_measurements_new RENAME TO user_measurements;
+    `);
+  }
+
   db.query(
     "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?) ON CONFLICT(version) DO NOTHING",
   ).run(SCHEMA_VERSION, new Date().toISOString());
@@ -280,11 +306,10 @@ function upsertUserMeasurements(db: Database, runId: number, dump: WhoopDump): v
   db.query(
     `INSERT INTO user_measurements (user_id, height_meter, weight_kilogram, max_heart_rate, run_id, updated_at)
       VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT(user_id) DO UPDATE SET
+      ON CONFLICT(user_id, run_id) DO UPDATE SET
         height_meter = excluded.height_meter,
         weight_kilogram = excluded.weight_kilogram,
         max_heart_rate = excluded.max_heart_rate,
-        run_id = excluded.run_id,
         updated_at = excluded.updated_at`,
   ).run(
     dump.user_data.user_id,

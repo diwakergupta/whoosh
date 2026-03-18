@@ -72,6 +72,11 @@ async function refreshTokenFile(params: {
   }
 
   await writeTokenFile(params.credentialsFile, refreshed);
+
+  params.logger.info("Token file updated after refresh", {
+    expiresInSeconds: refreshed.expires_in,
+    expiresAt: refreshed.expires_at,
+  });
 }
 
 export async function runServerCommand(cli: ServerCliOptions): Promise<void> {
@@ -187,6 +192,15 @@ export async function runServerCommand(cli: ServerCliOptions): Promise<void> {
         });
       }
 
+      logger.info("Starting sync with token state", {
+        reason,
+        tokenExpiresInSeconds: token.expiresIn,
+        tokenExpiresAt: token.expiresAt,
+        tokenExpired: isTokenExpired(token),
+        configuredRefreshMinutes: config.server.jwtRefreshMinutes,
+        output: config.export.output,
+      });
+
       const client = new WhoopClient({
         accessToken: token.accessToken,
         userAgent: "whoosh/0.1.0",
@@ -207,7 +221,17 @@ export async function runServerCommand(cli: ServerCliOptions): Promise<void> {
       }
 
       markSyncSuccess(healthState);
-      logger.info("Scheduled sync completed", { reason });
+      logger.info("Scheduled sync completed", {
+        reason,
+        mode: plan.mode,
+        output: config.export.output,
+        records: {
+          sleeps: dump.sleep_collection.records.length,
+          recoveries: dump.recovery_collection.records.length,
+          workouts: dump.workout_collection.records.length,
+          cycles: dump.cycle_collection.records.length,
+        },
+      });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       markSyncFailure(healthState, errorMessage);

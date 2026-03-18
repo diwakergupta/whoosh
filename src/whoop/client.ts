@@ -47,11 +47,30 @@ export class WhoopClient {
   }
 
   private async getJSON<T>(url: string): Promise<T> {
-    const response = await fetchWithRetry(url, {
-      method: "GET",
-      headers: this.buildHeaders(),
-    }, {
-      fetchImpl: this.fetchImpl,
+    const startedAt = Date.now();
+    this.logger?.debug("HTTP GET start", { url });
+
+    let response: Response;
+    try {
+      response = await fetchWithRetry(url, {
+        method: "GET",
+        headers: this.buildHeaders(),
+      }, {
+        fetchImpl: this.fetchImpl,
+      });
+    } catch (error) {
+      this.logger?.error("HTTP GET failed", {
+        url,
+        elapsedMs: Date.now() - startedAt,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+
+    this.logger?.debug("HTTP GET success", {
+      url,
+      status: response.status,
+      elapsedMs: Date.now() - startedAt,
     });
 
     let json: unknown;
