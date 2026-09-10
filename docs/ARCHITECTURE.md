@@ -30,7 +30,7 @@
 2. Immediate token refresh on startup.
 3. Schedule periodic token refresh job.
 4. Serve `GET /health` on a localhost health port for supervisors.
-5. Schedule periodic sync job using Croner.
+5. Schedule periodic sync job using Bun.cron.
 6. Retry transient failures; fail fast on unrecoverable auth.
 
 ## Data model

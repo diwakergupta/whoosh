@@ -149,4 +149,39 @@ describe("resolveConfig", () => {
       }),
     ).rejects.toThrow("health port must be between 1 and 65535");
   });
+
+  it("fails when server crontab is invalid", async () => {
+    const dir = await makeTempDir();
+
+    await expect(
+      resolveConfig({
+        command: "server",
+        cli: {
+          output: "json",
+          jsonPath: path.join(dir, "whoosh.json"),
+          crontab: "invalid cron expression",
+        },
+        cwd: dir,
+        env: {},
+      }),
+    ).rejects.toThrow("Invalid server crontab");
+  });
+
+  it("accepts valid crontab expressions for server command", async () => {
+    const dir = await makeTempDir();
+
+    const config = await resolveConfig({
+      command: "server",
+      cli: {
+        output: "json",
+        jsonPath: path.join(dir, "whoosh.json"),
+        crontab: "*/15 * * * *",
+      },
+      cwd: dir,
+      env: {},
+    });
+
+    expect(config.server.crontab).toBe("*/15 * * * *");
+  });
 });
+

@@ -114,6 +114,22 @@ function toPort(value: string | number | undefined, fallback: number, fieldName:
   return parsed;
 }
 
+function toCrontab(value: string | undefined): string {
+  if (value === undefined || value === null || value === "") {
+    return DEFAULT_SERVER_CRONTAB;
+  }
+  const trimmed = value.trim();
+  try {
+    Bun.cron.parse(trimmed);
+  } catch (error) {
+    throw new AppError(
+      `Invalid server crontab "${value}": ${error instanceof Error ? error.message : String(error)}`,
+      "VALIDATION",
+    );
+  }
+  return trimmed;
+}
+
 function requireExporterPath(output: "sqlite" | "json", sqlitePath: string | undefined, jsonPath: string | undefined): void {
   if (output === "sqlite" && !sqlitePath) {
     throw new AppError("SQLite export requires a path. Set --db or export.sqlite.path in config.", "VALIDATION");
@@ -154,7 +170,9 @@ export async function resolveConfig(input: ResolveConfigInput): Promise<Resolved
     requireExporterPath(output, sqlitePath, jsonPath);
   }
 
-  const crontab = input.cli.crontab ?? fileConfig.server?.crontab ?? DEFAULT_SERVER_CRONTAB;
+  const crontab = input.command === "server"
+    ? toCrontab(input.cli.crontab ?? fileConfig.server?.crontab)
+    : (input.cli.crontab ?? fileConfig.server?.crontab ?? DEFAULT_SERVER_CRONTAB);
   const jwtRefreshMinutes = toJwtRefreshMinutes(input.cli.jwtRefreshMinutes ?? fileConfig.server?.jwt_refresh_minutes);
   const healthPort = toPort(input.cli.healthPort ?? fileConfig.server?.health_port, DEFAULT_HEALTH_PORT, "health port");
 

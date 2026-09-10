@@ -13,7 +13,7 @@ Minimal Bun CLI focused on reliability and ownership of Whoop data.
 ## Runtime choices
 
 - Runtime/build/test: Bun
-- Scheduler: Croner
+- Scheduler: Bun.cron (builtin)
 - OAuth library: openid-client
 - DB: `bun:sqlite` with WAL mode
 

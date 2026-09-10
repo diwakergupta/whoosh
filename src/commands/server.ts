@@ -1,4 +1,3 @@
-import { Cron } from "croner";
 import { createOAuthClient, refreshAccessToken } from "../auth/oauth";
 import { isTokenExpired, normalizeToken, readTokenFile, writeTokenFile } from "../auth/token-store";
 import { requireWhoopClientCredentials, resolveConfig } from "../config/config";
@@ -253,38 +252,44 @@ export async function runServerCommand(cli: ServerCliOptions): Promise<void> {
 
   await runRefreshJob("startup");
 
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const refreshPattern = `*/${config.server.jwtRefreshMinutes} * * * *`;
-  const refreshCron = new Cron(
+  const refreshCron = Bun.cron(
     refreshPattern,
-    {
-      protect: true,
-      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      catch: (error) => {
+    async () => {
+      try {
+        await runRefreshJob("scheduled-refresh");
+      } catch (error) {
         logger.warn("Unhandled refresh cron callback error", {
           error: error instanceof Error ? error.message : String(error),
         });
-      },
+      }
     },
-    () => {
-      void runRefreshJob("scheduled-refresh");
-    },
+    { tz },
   );
 
-  const syncCron = new Cron(
-    config.server.crontab,
-    {
-      protect: true,
-      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      catch: (error) => {
-        logger.warn("Unhandled sync cron callback error", {
-          error: error instanceof Error ? error.message : String(error),
-        });
+  let syncCron: Bun.CronJob;
+  try {
+    syncCron = Bun.cron(
+      config.server.crontab,
+      async () => {
+        try {
+          await runSyncJob("scheduled-sync");
+        } catch (error) {
+          logger.warn("Unhandled sync cron callback error", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       },
-    },
-    () => {
-      void runSyncJob("scheduled-sync");
-    },
-  );
+      { tz },
+    );
+  } catch (error) {
+    refreshCron.stop();
+    throw new AppError(
+      `Invalid cron expression for server crontab "${config.server.crontab}": ${error instanceof Error ? error.message : String(error)}`,
+      "VALIDATION",
+    );
+  }
 
   logger.info("Server mode started", {
     crontab: config.server.crontab,
